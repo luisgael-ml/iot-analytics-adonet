@@ -1,0 +1,111 @@
+# Despliegue del módulo IoT Analytics Dashboard en Kubernetes
+# 1) Secret con la contraseña  2) ConfigMap con el script SQL
+# 3) PostgreSQL (Deployment + Service)  4) Job que ejecuta el módulo C# en modo demo
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: admin123
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-init
+data:
+  init.sql: |
+    -- Tabla de sensores del proyecto IoT Analytics Dashboard
+    CREATE TABLE IF NOT EXISTS sensores (
+        id        SERIAL PRIMARY KEY,           -- identificador autoincremental
+        nombre    VARCHAR(50)  NOT NULL,        -- nombre del sensor
+        tipo      VARCHAR(30)  NOT NULL,        -- temperatura, humedad, presión...
+        ubicacion VARCHAR(50),                  -- área de la planta
+        valor     NUMERIC(10,2),                -- última lectura
+        fecha     TIMESTAMP DEFAULT NOW()       -- fecha de registro
+    );
+    
+    -- Datos iniciales
+    INSERT INTO sensores (nombre, tipo, ubicacion, valor) VALUES
+    ('SEN-T01', 'Temperatura', 'Línea 1', 24.50),
+    ('SEN-H01', 'Humedad', 'Almacén', 55.00),
+    ('SEN-P01', 'Presión', 'Caldera', 101.30);
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          args: ["-c", "ssl=on",
+                 "-c", "ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem",
+                 "-c", "ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key"]
+          env:
+            - name: POSTGRES_DB
+              value: iotanalytics
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "iotanalytics"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+      volumes:
+        - name: init
+          configMap:
+            name: db-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iot-analytics-demo
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: iot-analytics
+          image: iot-analytics-adonet:1.0
+          imagePullPolicy: Never      # usa la imagen construida localmente con docker build
+          args: ["--demo"]
+          env:
+            - name: DB_HOST
+              value: postgres         # nombre del Service de PostgreSQL
+            - name: DB_SSLMODE
+              value: Require
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD

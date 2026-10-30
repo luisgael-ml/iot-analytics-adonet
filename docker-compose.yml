@@ -1,0 +1,46 @@
+# Nombre propio del proyecto para no mezclarse con otros proyectos de Docker
+name: iot-analytics-adonet
+
+services:
+  # Base de datos PostgreSQL 16 con SSL activado
+  postgres:
+    image: postgres:16
+    container_name: pg-iot-analytics
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin123}   # del archivo .env; admin123 si no existe
+      POSTGRES_DB: iotanalytics
+    # Activa SSL con el certificado autofirmado que trae la imagen
+    command: >
+      -c ssl=on
+      -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+    ports:
+      - "5433:5432"     # 5433 en la PC para no chocar con otros PostgreSQL
+    volumes:
+      # Crea la tabla y los datos iniciales la primera vez que arranca
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d iotanalytics"]
+      interval: 3s
+      retries: 10
+
+  # Módulo C# (SDK de .NET 8 dentro del contenedor, no requiere instalarlo)
+  app:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    working_dir: /app
+    environment:
+      DB_HOST: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-admin123}
+      DB_SSLMODE: Require
+    volumes:
+      - ./:/app
+      - nuget:/root/.nuget/packages   # guarda Npgsql descargado para no bajarlo cada vez
+    command: dotnet run
+    stdin_open: true
+    tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  nuget:
